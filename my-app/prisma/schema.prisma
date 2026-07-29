@@ -1,0 +1,22 @@
+// This is your Prisma schema file for SQLite
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+model Lead {
+  id              String   @id @default(cuid())
+  companyName     String
+  website         String
+  companyOverview String
+  coreProduct     String
+  targetCustomer  String
+  b2bDecision     String
+  salesQuestions  String
+  createdAt       DateTime @default(now())
+}
