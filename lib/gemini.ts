@@ -9,15 +9,21 @@ export interface AnalysisInput {
 }
 
 export interface AnalysisOutput {
+  companyName: string;
   companyOverview: string;
   coreProduct: string;
   targetCustomer: string;
   b2bDecision: 'YES' | 'NO';
   salesQuestions: string[];
+  servicesProvided?: string[];
+  valueProposition?: string;
+  industry?: string;
+  aiSummary: string;
 }
 
 // Zod Schema for strict runtime validation of AI JSON response
 const AnalysisOutputSchema = z.object({
+  companyName: z.string().min(1, 'companyName cannot be empty'),
   companyOverview: z.string().min(1, 'companyOverview cannot be empty'),
   coreProduct: z.string().min(1, 'coreProduct cannot be empty'),
   targetCustomer: z.string().min(1, 'targetCustomer cannot be empty'),
@@ -25,6 +31,10 @@ const AnalysisOutputSchema = z.object({
   salesQuestions: z
     .array(z.string())
     .min(1, 'salesQuestions must contain at least 1 question'),
+  servicesProvided: z.array(z.string()).optional(),
+  valueProposition: z.string().optional(),
+  industry: z.string().optional(),
+  aiSummary: z.string().min(1, 'aiSummary cannot be empty'),
 });
 
 /**
@@ -124,12 +134,31 @@ function generateFallbackOutput(input: AnalysisInput): AnalysisOutput {
     `Are you interested in streamlining your customer onboarding and workflow automation?`,
   ];
 
+  // Parse services provided from heading matches or fallback
+  const servicesProvided = headingMatches.length > 0
+    ? headingMatches.map(h => `${h} Solutions`)
+    : [
+      `${companyName} Custom Services`,
+      `${companyName} Digital Solutions`,
+      `Operational Strategy & Support`
+    ];
+
+  const valueProposition = `Enabling clients to drive operational growth and efficiency through customized B2B services, modern client onboarding, and automated service delivery.`;
+  const industry = isB2B ? 'Enterprise Technology & Services' : 'Consumer Solutions';
+
+  const aiSummary = `${companyName} is an active operator in the ${industry} space. Analysis indicates a strong alignment in B2B service delivery, providing tailored solutions to help commercial customers optimize operational efficiency and workflow automation.`;
+
   return {
-    companyOverview,
+    companyName,
+    companyOverview: `${companyOverview} As a specialized player, ${companyName} leverages industry best practices and strategic service options to deliver high-quality outcomes. The company is committed to operational transparency, digital transformation, and client satisfaction.`,
     coreProduct,
     targetCustomer,
     b2bDecision: isB2B ? 'YES' : 'NO',
     salesQuestions,
+    servicesProvided,
+    valueProposition,
+    industry,
+    aiSummary,
   };
 }
 
@@ -138,16 +167,21 @@ function generateFallbackOutput(input: AnalysisInput): AnalysisOutput {
  * with 100% dynamic parsing fallback so every website shows accurate real-world data.
  */
 export async function analyzeWebsite(input: AnalysisInput): Promise<AnalysisOutput> {
-  const openAiKey = process.env.OPENAI_API_KEY;
-  const geminiKey = process.env.GEMINI_API_KEY;
+  const openAiKey = process.env.OPENAI_API_KEY?.trim();
+  const geminiKey = process.env.GEMINI_API_KEY?.trim();
 
-  const apiKey = openAiKey || geminiKey;
+  // Helper to identify key types
+  const isOpenAIKey = (key?: string) => typeof key === 'string' && (key.startsWith('sk-proj-') || key.startsWith('sk-'));
+  const isGeminiKey = (key?: string) => typeof key === 'string' && (key.startsWith('AIzaSy') || key.startsWith('AIza'));
 
-  if (!apiKey || apiKey.trim() === '') {
+  // Determine active keys based on format, not just env var name
+  const actualOpenAIKey = isOpenAIKey(openAiKey) ? openAiKey : (isOpenAIKey(geminiKey) ? geminiKey : undefined);
+  const actualGeminiKey = isGeminiKey(geminiKey) ? geminiKey : (isGeminiKey(openAiKey) ? openAiKey : undefined);
+
+  // If no keys configured at all, use the fallback mock generator
+  if (!actualOpenAIKey && !actualGeminiKey) {
     return generateFallbackOutput(input);
   }
-
-  const isOpenAIKey = apiKey.startsWith('sk-proj-') || apiKey.startsWith('sk-');
 
   const prompt = `You are an expert B2B Sales Intelligence Analyst.
 
@@ -166,15 +200,24 @@ CRITICAL INSTRUCTIONS:
 4. Output MUST adhere strictly to this JSON structure:
 
 {
-  "companyOverview": "Concise 1-2 sentence overview of what the company does",
-  "coreProduct": "Key products, services, or solutions offered",
+  "companyName": "Official name of the company",
+  "companyOverview": "A highly comprehensive, deep-dive overview (at least 5-7 sentences or a full paragraph) of what the company does, its core operations, target industries, market positioning, and what makes it unique",
+  "coreProduct": "Key products, main services, or solutions offered",
   "targetCustomer": "Primary target audience, ideal customer profile, or industries served",
   "b2bDecision": "YES or NO",
   "salesQuestions": [
     "High-converting discovery question 1?",
     "High-converting discovery question 2?",
     "High-converting discovery question 3?"
-  ]
+  ],
+  "servicesProvided": [
+    "Detailed Service 1 offered by the company",
+    "Detailed Service 2 offered by the company",
+    "Detailed Service 3 offered by the company"
+  ],
+  "valueProposition": "A concise and compelling description of the company's unique value proposition and primary benefits to its clients",
+  "industry": "Primary industry classification (e.g., Enterprise Software, Landscaping Services, Healthcare IT, Logistics)",
+  "aiSummary": "A concise 2-3 sentence executive AI summary of the analysis findings and sales angle"
 }
 
 Criteria for b2bDecision:
@@ -182,10 +225,12 @@ Criteria for b2bDecision:
 - Return "NO" if the company exclusively targets B2C individual consumers with no B2B offering.`;
 
   let responseText: string | undefined;
+  let lastError: Error | undefined;
 
-  if (isOpenAIKey) {
+  // Try to use OpenAI if configured
+  if (actualOpenAIKey) {
     try {
-      const openai = new OpenAI({ apiKey, timeout: 20000 });
+      const openai = new OpenAI({ apiKey: actualOpenAIKey, timeout: 20000 });
       const completion = await openai.chat.completions.create({
         model: 'gpt-4o-mini',
         messages: [
@@ -198,24 +243,14 @@ Criteria for b2bDecision:
       responseText = completion.choices[0]?.message?.content?.trim();
     } catch (error) {
       console.error('OpenAI Analysis failed:', error);
-      // Fallback to Gemini if GEMINI_API_KEY exists and starts with AIza
-      if (geminiKey && geminiKey.startsWith('AIza')) {
-        try {
-          const ai = new GoogleGenAI({ apiKey: geminiKey });
-          const response = await ai.models.generateContent({
-            model: 'gemini-2.0-flash',
-            contents: prompt,
-            config: { responseMimeType: 'application/json' },
-          });
-          responseText = response.text?.trim();
-        } catch {
-          // ignore
-        }
-      }
+      lastError = error instanceof Error ? error : new Error(String(error));
     }
-  } else {
+  }
+
+  // Try to use Gemini if response is not yet populated and a Gemini key is configured
+  if (!responseText && actualGeminiKey) {
     try {
-      const ai = new GoogleGenAI({ apiKey });
+      const ai = new GoogleGenAI({ apiKey: actualGeminiKey });
       const response = await ai.models.generateContent({
         model: 'gemini-2.0-flash',
         contents: prompt,
@@ -226,11 +261,14 @@ Criteria for b2bDecision:
       responseText = response.text?.trim();
     } catch (error) {
       console.error('Gemini Analysis failed:', error);
+      lastError = error instanceof Error ? error : new Error(String(error));
     }
   }
 
+  // If keys were configured but we failed to get a response, throw the last error
+  // so the user receives the detailed error (e.g. Quota/Billing exceeded) in the UI
   if (!responseText) {
-    return generateFallbackOutput(input);
+    throw lastError || new Error('AI analysis failed. Please check your API key configuration and quota.');
   }
 
   // Strip markdown formatting if AI included it despite instructions
@@ -256,3 +294,4 @@ Criteria for b2bDecision:
 
   return validationResult.data;
 }
+

@@ -1,125 +1,166 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { z } from 'zod';
-import { scrapeWebsite } from '@/lib/scraper';
+import { scrapeWebsite, searchWebsiteByCompanyName } from '@/lib/scraper';
 import { analyzeWebsite } from '@/lib/gemini';
 import db from '@/lib/db';
 
-// Input Schema Validation
-const AnalyzeInputSchema = z.object({
-  url: z.string().min(1, 'URL cannot be empty'),
-});
+const pdf = require('pdf-parse');
 
 export async function POST(request: NextRequest) {
-  // 1. Parse JSON Request Body
-  let body: unknown;
+  const contentType = request.headers.get('content-type') || '';
+  let inputType = 'URL';
+  let companyName = '';
+  let targetUrl = '';
+  let textToAnalyze = '';
+  let title = '';
+  let description = '';
+
   try {
-    body = await request.json();
-  } catch {
-    return NextResponse.json(
-      { error: 'Invalid URL', details: 'Malformed or empty JSON request body.' },
-      { status: 400 }
-    );
-  }
+    if (contentType.includes('multipart/form-data')) {
+      // 1. PDF File Upload Flow
+      const formData = await request.formData();
+      const file = formData.get('file') as File | null;
 
-  // 2. Validate URL Input using Zod
-  const validation = AnalyzeInputSchema.safeParse(body);
-  if (!validation.success) {
-    const errorDetails = validation.error.issues
-      .map((issue) => issue.message)
-      .join('; ');
-    return NextResponse.json(
-      { error: 'Invalid URL', details: errorDetails },
-      { status: 400 }
-    );
-  }
+      if (!file) {
+        return NextResponse.json(
+          { error: 'Invalid Request', details: 'No PDF file was uploaded.' },
+          { status: 400 }
+        );
+      }
 
-  const targetUrl = validation.data.url;
+      inputType = 'PDF';
+      title = file.name || 'Uploaded PDF';
+      description = 'Extracted text from uploaded sales/company document.';
+      targetUrl = 'PDF File Upload';
 
-  // 3. Step 1: Execute Web Scraper
-  let scrapedData;
-  try {
-    scrapedData = await scrapeWebsite(targetUrl);
+      const arrayBuffer = await file.arrayBuffer();
+      const buffer = Buffer.from(arrayBuffer);
+      const parser = new pdf.PDFParse({ data: buffer, disableWorker: true });
+      const parsedPdf = await parser.getText();
+      textToAnalyze = parsedPdf.text || '';
+
+      if (!textToAnalyze.trim()) {
+        return NextResponse.json(
+          { error: 'Parsing Failed', details: 'The uploaded PDF file contains no readable text.' },
+          { status: 422 }
+        );
+      }
+    } else {
+      // 2. JSON URL/Company Name Flow
+      const body = await request.json();
+      const { type, url } = body; // type: 'url' | 'company', url: target string
+
+      if (!url || !url.trim()) {
+        return NextResponse.json(
+          { error: 'Invalid Input', details: 'Input value cannot be empty.' },
+          { status: 400 }
+        );
+      }
+
+      if (type === 'company') {
+        inputType = 'TEXT';
+        targetUrl = await searchWebsiteByCompanyName(url);
+      } else {
+        inputType = 'URL';
+        targetUrl = url;
+      }
+
+      // Execute scraper
+      const scrapedData = await scrapeWebsite(targetUrl);
+      targetUrl = scrapedData.url;
+      title = scrapedData.title;
+      description = scrapedData.description;
+      textToAnalyze = scrapedData.content;
+    }
   } catch (error) {
-    const errorMessage =
-      error instanceof Error ? error.message : 'Failed to reach website.';
+    const message = error instanceof Error ? error.message : 'Error processing request input.';
     return NextResponse.json(
-      { error: 'Website unreachable', details: errorMessage },
-      { status: 404 }
-    );
-  }
-
-  // 4. Step 2: Execute Gemini AI Analysis
-  let aiResult;
-  try {
-    aiResult = await analyzeWebsite({
-      title: scrapedData.title,
-      description: scrapedData.description,
-      content: scrapedData.content,
-    });
-  } catch (error) {
-    const errorMessage =
-      error instanceof Error ? error.message : 'AI website analysis failed.';
-    return NextResponse.json(
-      { error: 'Gemini Error', details: errorMessage },
+      { error: 'Process Error', details: message },
       { status: 500 }
     );
   }
 
-  // 5. Step 3: Save Result to Prisma SQLite Database
+  // 3. AI website/content analysis
+  let aiResult;
+  try {
+    aiResult = await analyzeWebsite({
+      title,
+      description,
+      content: textToAnalyze,
+    });
+  } catch (error) {
+    const errorMessage = error instanceof Error ? error.message : 'AI website analysis failed.';
+    return NextResponse.json(
+      { error: 'AI Error', details: errorMessage },
+      { status: 500 }
+    );
+  }
+
+  // 4. Save result to Prisma SQLite database
   let savedLead;
   try {
-    // Determine clean company name from title or website domain
-    const fallbackDomain = targetUrl.replace(/^https?:\/\//i, '').replace(/^www\./i, '').split('/')[0];
-    const domainPart = fallbackDomain.split('.')[0] || 'Company';
-    const fallbackName = domainPart.charAt(0).toUpperCase() + domainPart.slice(1);
-
-    const rawTitleName = scrapedData.title
-      ? scrapedData.title.split('|')[0].split('-')[0].replace(/Official Website/i, '').trim()
-      : '';
-    const companyName =
-      rawTitleName.length >= 2 && !rawTitleName.toLowerCase().includes('just a moment')
-        ? rawTitleName
-        : fallbackName;
+    companyName = aiResult.companyName || title.split('|')[0].split('-')[0].trim();
+    if (!companyName || companyName.toLowerCase().includes('just a moment')) {
+      companyName = 'Researched Company';
+    }
 
     const salesQuestionsJson = typeof aiResult.salesQuestions === 'string'
       ? aiResult.salesQuestions
       : JSON.stringify(aiResult.salesQuestions);
 
+    const servicesProvidedJson = aiResult.servicesProvided
+      ? (typeof aiResult.servicesProvided === 'string'
+        ? aiResult.servicesProvided
+        : JSON.stringify(aiResult.servicesProvided))
+      : null;
+
     savedLead = await db.lead.create({
       data: {
         companyName,
-        website: scrapedData.url || targetUrl,
+        website: targetUrl,
         companyOverview: aiResult.companyOverview,
         coreProduct: aiResult.coreProduct,
         targetCustomer: aiResult.targetCustomer,
         b2bDecision: aiResult.b2bDecision,
         salesQuestions: salesQuestionsJson,
+        servicesProvided: servicesProvidedJson,
+        valueProposition: aiResult.valueProposition || null,
+        industry: aiResult.industry || null,
+        inputType,
+        aiSummary: aiResult.aiSummary || null,
       },
     });
   } catch (error) {
-    const errorMessage =
-      error instanceof Error ? error.message : 'Failed to save record to database.';
+    const errorMessage = error instanceof Error ? error.message : 'Failed to save record to database.';
     return NextResponse.json(
       { error: 'Database Error', details: errorMessage },
       { status: 500 }
     );
   }
 
-  // Parse salesQuestions for client response if stringified
+  // Parse fields for response
   let parsedSalesQuestions = savedLead.salesQuestions;
   try {
     if (typeof savedLead.salesQuestions === 'string') {
       parsedSalesQuestions = JSON.parse(savedLead.salesQuestions);
     }
   } catch {
-    // Keep as string if parsing fails
+    // ignore
   }
 
-  // 6. Return Saved Record as JSON
+  let parsedServicesProvided = savedLead.servicesProvided;
+  try {
+    if (typeof savedLead.servicesProvided === 'string') {
+      parsedServicesProvided = JSON.parse(savedLead.servicesProvided);
+    }
+  } catch {
+    // ignore
+  }
+
   return NextResponse.json(
     {
       ...savedLead,
       salesQuestions: parsedSalesQuestions,
+      servicesProvided: parsedServicesProvided,
     },
     { status: 200 }
   );

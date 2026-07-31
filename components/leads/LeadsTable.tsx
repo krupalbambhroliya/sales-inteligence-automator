@@ -2,13 +2,14 @@
 
 import React, { useEffect, useState } from 'react';
 import Link from 'next/link';
-import { Eye, Loader2 } from 'lucide-react';
+import { Eye, Loader2, Trash2 } from 'lucide-react';
 
 export interface LeadRow {
   id: string;
   companyName: string;
   website: string;
   b2bDecision: string;
+  inputType?: string;
   createdAt: string;
 }
 
@@ -18,6 +19,27 @@ export const LeadsTable: React.FC = () => {
   const [leads, setLeads] = useState<LeadRow[]>([]);
   const [isLoading, setIsLoading] = useState<boolean>(true);
   const [currentPage, setCurrentPage] = useState<number>(1);
+
+  const handleDelete = async (id: string) => {
+    if (!window.confirm('Are you sure you want to delete this lead?')) {
+      return;
+    }
+
+    try {
+      const res = await fetch(`/api/leads?id=${encodeURIComponent(id)}`, {
+        method: 'DELETE',
+      });
+
+      if (res.ok) {
+        setLeads((prev) => prev.filter((lead) => lead.id !== id));
+      } else {
+        const errorData = await res.json();
+        alert(errorData.error || 'Failed to delete lead.');
+      }
+    } catch {
+      alert('An error occurred while deleting the lead.');
+    }
+  };
 
   useEffect(() => {
     async function fetchLeads() {
@@ -32,6 +54,7 @@ export const LeadsTable: React.FC = () => {
               companyName: item.companyName,
               website: item.website.replace(/^https?:\/\//i, ''),
               b2bDecision: item.b2bDecision,
+              inputType: item.inputType,
               createdAt: item.createdAt
                 ? new Date(item.createdAt).toLocaleDateString('en-US', {
                     month: 'short',
@@ -85,9 +108,9 @@ export const LeadsTable: React.FC = () => {
         <table className="w-full text-left border-collapse">
           <thead>
             <tr className="border-b border-slate-200/80 bg-slate-50/60 text-xs font-semibold text-slate-500">
-              <th className="py-4 px-6">Company</th>
-              <th className="py-4 px-6">Website</th>
-              <th className="py-4 px-6">B2B Lead</th>
+              <th className="py-4 px-6">Company Name</th>
+              <th className="py-4 px-6">Input Type</th>
+              <th className="py-4 px-6">B2B Status</th>
               <th className="py-4 px-6">Date</th>
               <th className="py-4 px-6 text-center">Action</th>
             </tr>
@@ -114,20 +137,20 @@ export const LeadsTable: React.FC = () => {
                 return (
                   <tr key={lead.id} className="hover:bg-slate-50/80 transition">
                     <td className="py-4 px-6 font-bold text-slate-900">{lead.companyName}</td>
-                    <td className="py-4 px-6 text-blue-600 hover:underline">
-                      <a
-                        href={
-                          lead.website.startsWith('http')
-                            ? lead.website
-                            : lead.website.includes('.')
-                            ? `https://${lead.website}`
-                            : `https://www.${lead.website.toLowerCase().replace(/[^a-z0-9]/g, '')}.com`
-                        }
-                        target="_blank"
-                        rel="noreferrer"
-                      >
-                        {lead.website}
-                      </a>
+                    <td className="py-4 px-6">
+                      <span className={`inline-flex items-center px-2.5 py-1 rounded-md text-[10px] font-extrabold tracking-wider ${
+                        lead.inputType === 'PDF' 
+                          ? 'bg-purple-100 text-purple-700'
+                          : lead.inputType === 'TEXT' || lead.inputType === 'COMPANY'
+                          ? 'bg-indigo-100 text-indigo-700'
+                          : 'bg-blue-100 text-blue-700'
+                      }`}>
+                        {lead.inputType === 'PDF'
+                          ? 'Upload PDF'
+                          : lead.inputType === 'TEXT' || lead.inputType === 'COMPANY'
+                          ? 'Company Name'
+                          : 'Website URL'}
+                      </span>
                     </td>
                     <td className="py-4 px-6">
                       {isB2B ? (
@@ -140,14 +163,30 @@ export const LeadsTable: React.FC = () => {
                         </span>
                       )}
                     </td>
-                    <td className="py-4 px-6 text-slate-500">{lead.createdAt}</td>
+                    <td className="py-4 px-6 text-slate-500 font-medium">
+                      {new Date(lead.createdAt).toLocaleDateString('en-US', {
+                        month: 'short',
+                        day: 'numeric',
+                        year: 'numeric'
+                      })}
+                    </td>
                     <td className="py-4 px-6 text-center">
-                      <Link
-                        href={`/result?id=${lead.id}`}
-                        className="inline-flex items-center justify-center p-2 rounded-lg text-slate-500 hover:text-blue-600 hover:bg-blue-50 transition"
-                      >
-                        <Eye className="w-4 h-4" />
-                      </Link>
+                      <div className="flex items-center justify-center gap-1.5">
+                        <Link
+                          href={`/result?id=${lead.id}`}
+                          className="inline-flex items-center justify-center p-2 rounded-lg text-slate-500 hover:text-blue-600 hover:bg-blue-50 transition"
+                          title="View Details"
+                        >
+                          <Eye className="w-4 h-4" />
+                        </Link>
+                        <button
+                          onClick={() => handleDelete(lead.id)}
+                          className="inline-flex items-center justify-center p-2 rounded-lg text-slate-500 hover:text-rose-600 hover:bg-rose-50 transition"
+                          title="Delete Lead"
+                        >
+                          <Trash2 className="w-4 h-4" />
+                        </button>
+                      </div>
                     </td>
                   </tr>
                 );

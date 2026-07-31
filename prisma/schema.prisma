@@ -18,5 +18,10 @@ model Lead {
   targetCustomer  String
   b2bDecision     String
   salesQuestions  String
+  servicesProvided String?
+  valueProposition String?
+  industry        String?
+  inputType       String   @default("URL")
+  aiSummary       String?
   createdAt       DateTime @default(now())
 }

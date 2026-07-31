@@ -44,8 +44,8 @@ function extractFromHtml(html: string, targetUrl: string): ScrapedData {
   // Remove irrelevant DOM elements
   $(
     'header, nav, footer, script, style, noscript, svg, iframe, ' +
-      '#cookie-banner, .cookie-banner, .cookie-consent, .cookie-popup, ' +
-      '#cookie-consent, .modal, .popup, [id*="cookie"], [class*="cookie"]'
+    '#cookie-banner, .cookie-banner, .cookie-consent, .cookie-popup, ' +
+    '#cookie-consent, .modal, .popup, [id*="cookie"], [class*="cookie"]'
   ).remove();
 
   // Extract Page Title
@@ -142,7 +142,83 @@ function generateResilientFallback(targetUrl: string): ScrapedData {
 }
 
 /**
+ * Dynamically resolves a company name to its official website URL by scraping DuckDuckGo results.
+ */
+export async function searchWebsiteByCompanyName(companyName: string): Promise<string> {
+  const query = `${companyName} official website`;
+  const searchUrl = `https://html.duckduckgo.com/html/?q=${encodeURIComponent(query)}`;
+
+  try {
+    const response = await axios.get(searchUrl, {
+      headers: {
+        'User-Agent':
+          'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+      },
+      timeout: 8000,
+    });
+
+    const $ = cheerio.load(response.data);
+    const links: string[] = [];
+
+    $('.result__url').each((_, el) => {
+      const link = $(el).text().trim();
+      if (link) {
+        links.push(link);
+      }
+    });
+
+    if (links.length > 0) {
+      let resolvedUrl = links[0];
+      if (!resolvedUrl.startsWith('http://') && !resolvedUrl.startsWith('https://')) {
+        resolvedUrl = `https://${resolvedUrl}`;
+      }
+      return resolvedUrl;
+    }
+  } catch (error) {
+    console.error('DuckDuckGo search failed:', error);
+  }
+
+  // Fallback to simple alphanumeric normalization
+  const sanitized = companyName.toLowerCase().replace(/[^a-z0-9]/g, '');
+  return `https://www.${sanitized}.com`;
+}
+
+/**
+ * Searches homepage HTML for a link leading to the About page.
+ */
+function findAboutPageLink(html: string, baseUrl: string): string | null {
+  const $ = cheerio.load(html);
+  let aboutUrl: string | null = null;
+
+  $('a').each((_, el) => {
+    const href = $(el).attr('href')?.trim();
+    const text = $(el).text().toLowerCase().trim();
+
+    if (href && (
+      text.includes('about') ||
+      text.includes('who we are') ||
+      text.includes('our story') ||
+      text.includes('company')
+    )) {
+      try {
+        const resolved = new URL(href, baseUrl).toString();
+        const baseDomain = new URL(baseUrl).hostname.replace(/^www\./i, '');
+        const targetDomain = new URL(resolved).hostname.replace(/^www\./i, '');
+        if (baseDomain === targetDomain && !aboutUrl) {
+          aboutUrl = resolved;
+        }
+      } catch {
+        // Ignore invalid URL
+      }
+    }
+  });
+
+  return aboutUrl;
+}
+
+/**
  * Main scraper function with retries, alternate domain variants (www/apex), browser headers, and Cloudflare protection fallback.
+ * Also automatically checks and merges the About page if available.
  */
 export async function scrapeWebsite(rawUrl: string): Promise<ScrapedData> {
   const primaryUrl = normalizeUrl(rawUrl);
@@ -197,6 +273,25 @@ export async function scrapeWebsite(rawUrl: string): Promise<ScrapedData> {
 
               const data = extractFromHtml(pageHtml, targetUrl);
               if (data.content && data.content.trim().length >= 30) {
+                // Check if an About page link is available
+                const aboutUrl = findAboutPageLink(pageHtml, targetUrl);
+                if (aboutUrl && aboutUrl !== targetUrl) {
+                  try {
+                    const browser2 = await chromium.launch({ headless: true });
+                    const context2 = await browser2.newContext({ userAgent: browserHeaders['User-Agent'] });
+                    const page2 = await context2.newPage();
+                    await page2.goto(aboutUrl, { waitUntil: 'domcontentloaded', timeout: 12000 });
+                    const aboutHtml = await page2.content();
+                    await browser2.close();
+
+                    const aboutData = extractFromHtml(aboutHtml, aboutUrl);
+                    data.paragraphs = [...data.paragraphs, ...aboutData.paragraphs];
+                    data.headings = [...data.headings, ...aboutData.headings];
+                    data.content = `${data.content}\n\n[About Page Content]\n${aboutData.content}`;
+                  } catch {
+                    // Ignore About page errors
+                  }
+                }
                 return data;
               }
             } catch {
@@ -205,6 +300,25 @@ export async function scrapeWebsite(rawUrl: string): Promise<ScrapedData> {
           } else {
             const data = extractFromHtml(html, targetUrl);
             if (data.content && data.content.trim().length >= 20) {
+              // Check if an About page link is available in Cheerio
+              const aboutUrl = findAboutPageLink(html, targetUrl);
+              if (aboutUrl && aboutUrl !== targetUrl) {
+                try {
+                  const aboutResponse = await axios.get(aboutUrl, {
+                    timeout: 8000,
+                    headers: browserHeaders,
+                    validateStatus: (status) => status < 400,
+                  });
+                  if (typeof aboutResponse.data === 'string') {
+                    const aboutData = extractFromHtml(aboutResponse.data, aboutUrl);
+                    data.paragraphs = [...data.paragraphs, ...aboutData.paragraphs];
+                    data.headings = [...data.headings, ...aboutData.headings];
+                    data.content = `${data.content}\n\n[About Page Content]\n${aboutData.content}`;
+                  }
+                } catch {
+                  // Ignore About page errors
+                }
+              }
               return data;
             }
           }

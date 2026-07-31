@@ -7,10 +7,12 @@ import { Card } from '@/components/ui/Card';
 
 interface ProgressTimelineProps {
   targetName?: string;
+  type?: string;
 }
 
 export const ProgressTimeline: React.FC<ProgressTimelineProps> = ({
   targetName = 'https://www.springhilllandscaping.com',
+  type = 'url',
 }) => {
   const router = useRouter();
   const [currentStep, setCurrentStep] = useState<number>(1);
@@ -44,7 +46,7 @@ export const ProgressTimeline: React.FC<ProgressTimelineProps> = ({
           headers: {
             'Content-Type': 'application/json',
           },
-          body: JSON.stringify({ url: targetName }),
+          body: JSON.stringify({ type, url: targetName }),
         });
 
         clearTimeout(step1Timer);
@@ -126,8 +128,8 @@ export const ProgressTimeline: React.FC<ProgressTimelineProps> = ({
           <div className="relative flex items-start gap-4 z-10">
             <div
               className={`w-10 h-10 rounded-full flex items-center justify-center shrink-0 shadow-md transition-colors ${currentStep >= 2
-                  ? 'bg-emerald-500 text-white'
-                  : 'bg-blue-600 text-white'
+                ? 'bg-emerald-500 text-white'
+                : 'bg-blue-600 text-white'
                 }`}
             >
               {currentStep >= 2 ? <Check className="w-5 h-5" /> : <Globe className="w-5 h-5" />}
@@ -142,10 +144,10 @@ export const ProgressTimeline: React.FC<ProgressTimelineProps> = ({
           <div className="relative flex items-start gap-4 z-10">
             <div
               className={`w-10 h-10 rounded-full flex items-center justify-center shrink-0 shadow-md transition-colors ${currentStep >= 3
-                  ? 'bg-emerald-500 text-white'
-                  : currentStep === 2
-                    ? 'bg-blue-600 text-white animate-pulse'
-                    : 'border-2 border-slate-200 bg-white text-slate-400'
+                ? 'bg-emerald-500 text-white'
+                : currentStep === 2
+                  ? 'bg-blue-600 text-white animate-pulse'
+                  : 'border-2 border-slate-200 bg-white text-slate-400'
                 }`}
             >
               {currentStep >= 3 ? (
@@ -166,10 +168,10 @@ export const ProgressTimeline: React.FC<ProgressTimelineProps> = ({
           <div className="relative flex items-start gap-4 z-10">
             <div
               className={`w-10 h-10 rounded-full flex items-center justify-center shrink-0 shadow-md transition-colors ${currentStep >= 4
-                  ? 'bg-emerald-500 text-white'
-                  : currentStep === 3
-                    ? 'bg-blue-600 text-white animate-pulse'
-                    : 'border-2 border-slate-200 bg-white text-slate-400'
+                ? 'bg-emerald-500 text-white'
+                : currentStep === 3
+                  ? 'bg-blue-600 text-white animate-pulse'
+                  : 'border-2 border-slate-200 bg-white text-slate-400'
                 }`}
             >
               {currentStep >= 4 ? (
@@ -190,8 +192,8 @@ export const ProgressTimeline: React.FC<ProgressTimelineProps> = ({
           <div className="relative flex items-start gap-4 z-10">
             <div
               className={`w-10 h-10 rounded-full flex items-center justify-center shrink-0 shadow-md transition-colors ${currentStep === 4
-                  ? 'bg-emerald-500 text-white'
-                  : 'border-2 border-dashed border-blue-500 bg-blue-50 text-blue-600'
+                ? 'bg-emerald-500 text-white'
+                : 'border-2 border-dashed border-blue-500 bg-blue-50 text-blue-600'
                 }`}
             >
               {currentStep === 4 ? (
